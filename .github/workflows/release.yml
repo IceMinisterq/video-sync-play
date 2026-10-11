@@ -1,0 +1,116 @@
+# Builds the binary on each operating system natively, runs the behaviour
+# tests there, and attaches the results to a release.
+#
+# Native runners rather than cross-compilation: a macOS or Windows binary
+# built on Linux cannot be run, so it could not be tested before shipping.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build for and upload to"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  linux:
+    name: linux-${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-unknown-linux-musl
+            native: true
+          - arch: aarch64
+            target: aarch64-unknown-linux-musl
+            native: false
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add ${{ matrix.target }}
+
+      # musl: statically linked, so the result runs on any distribution with
+      # no glibc version to match and nothing to install.
+      - run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Behaviour tests
+        if: matrix.native
+        run: python3 tests/behaviour.py target/${{ matrix.target }}/release/video-sync-play
+
+      - name: Confirm no dynamic dependencies
+        if: matrix.native
+        run: |
+          file target/${{ matrix.target }}/release/video-sync-play
+          ldd  target/${{ matrix.target }}/release/video-sync-play 2>&1 | grep -q "statically linked"
+
+      - run: |
+          cp target/${{ matrix.target }}/release/video-sync-play \
+             video-sync-play-linux-${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: video-sync-play-linux-${{ matrix.arch }}
+
+  macos:
+    name: macos-universal
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+      - run: |
+          cargo build --release --target x86_64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin
+
+      # One download that runs on both Apple Silicon and Intel.
+      - run: |
+          lipo -create -output video-sync-play-macos \
+            target/x86_64-apple-darwin/release/video-sync-play \
+            target/aarch64-apple-darwin/release/video-sync-play
+          lipo -info video-sync-play-macos
+
+      - name: Behaviour tests
+        run: python3 tests/behaviour.py ./video-sync-play-macos
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: video-sync-play-macos
+
+  windows:
+    name: windows-x86_64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo build --release
+      - name: Behaviour tests
+        run: python3 tests/behaviour.py target/release/video-sync-play.exe
+      - run: copy target\release\video-sync-play.exe video-sync-play-windows.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: video-sync-play-windows.exe
+
+  publish:
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - run: |
+          chmod +x video-sync-play-linux-* video-sync-play-macos
+          sha256sum video-sync-play-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" video-sync-play-* SHA256SUMS.txt --clobber --repo "$GITHUB_REPOSITORY"

@@ -1,0 +1,5 @@
+# Cross-building the Linux ARM binary from an x86 machine: the host's `cc`
+# cannot emit aarch64, but the linker shipped with Rust can, and musl needs no
+# C toolchain of its own.
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"

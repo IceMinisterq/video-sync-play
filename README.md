@@ -13,27 +13,42 @@ wire. There is no account, no sign-up, and no server to rent.
 
 **None.** One file, nothing to install.
 
-- Any 64-bit Linux — Fedora 44, Arch, CachyOS, anything else. X11 or Wayland,
-  KDE or otherwise; it makes no difference, the player is a web page.
-- A browser you already have (Firefox, Chromium, Brave…).
-- That is the whole list. No Rust, no Python, no Node, no VLC, no libraries,
-  no root. The binary is statically linked, so there is no glibc version to
-  match and nothing to break when your system updates.
+- **Linux** (Fedora, Arch, CachyOS, Debian, anything else), x86-64 or ARM64.
+  X11 or Wayland, KDE or otherwise — it makes no difference, the player is a
+  web page.
+- **macOS**, Apple Silicon or Intel.
+- **Windows** 10 or 11.
+- A browser you already have (Firefox, Chrome, Safari, Edge…).
+
+That is the whole list. No Rust, no Python, no Node, no VLC, no libraries, no
+admin rights. The Linux builds are statically linked, so there is no glibc
+version to match and nothing to break when your system updates.
+
+The two of you do not need the same operating system. Linux and Windows,
+macOS and Linux — any mix works.
 
 ## Use it
 
-1. **Download** `video-sync-play` from
-   [Releases](../../releases/latest), and allow it to run:
+1. **Download** the file for your system from
+   [Releases](../../releases/latest):
+
+   | your system | file |
+   |---|---|
+   | Linux, normal PC | `video-sync-play-linux-x86_64` |
+   | Linux, ARM (Raspberry Pi, Asahi) | `video-sync-play-linux-aarch64` |
+   | macOS | `video-sync-play-macos` |
+   | Windows | `video-sync-play-windows.exe` |
+
+2. **One of you starts it.** Your browser opens by itself.
+
+   On Linux and macOS, allow it to run first:
 
    ```bash
-   chmod +x video-sync-play
+   chmod +x video-sync-play-*
+   ./video-sync-play-*
    ```
 
-2. **One of you starts it.** Your browser opens automatically.
-
-   ```bash
-   ./video-sync-play
-   ```
+   On Windows, double-click the `.exe`.
 
 3. **Send the printed link to the other person.** You both pick your own copy
    of the video, and press play.
@@ -41,7 +56,27 @@ wire. There is no account, no sign-up, and no server to rent.
 That link ends in `#CODE`, and that code is the password — anyone without it
 is refused. Treat the link as the invitation it is.
 
-Only one of you runs the program. The other just opens the link.
+Only one of you runs the program. The other just opens the link, and needs no
+download at all.
+
+### First run on macOS and Windows
+
+The binaries are not code-signed — signing needs a paid developer account —
+so each system asks once:
+
+- **macOS** says the developer cannot be verified. Either right-click the
+  file and choose *Open*, or clear the quarantine flag:
+
+  ```bash
+  xattr -d com.apple.quarantine video-sync-play-macos
+  ```
+
+- **Windows** SmartScreen shows a blue box: *More info* → *Run anyway*.
+  Windows Firewall will then ask whether to allow network access — say yes
+  for **private networks**, otherwise your friend cannot reach you.
+
+If that bothers you, build it yourself from source — it takes one command and
+is described below.
 
 ## Getting the link to reach them
 
@@ -51,13 +86,12 @@ Only one of you runs the program. The other just opens the link.
 you on a private, encrypted network with nothing in the middle, free, no
 server to rent:
 
-```bash
-sudo dnf install tailscale && sudo systemctl enable --now tailscaled && sudo tailscale up
-```
-
-```bash
-sudo pacman -S tailscale && sudo systemctl enable --now tailscaled && sudo tailscale up
-```
+| | |
+|---|---|
+| Fedora | `sudo dnf install tailscale && sudo systemctl enable --now tailscaled && sudo tailscale up` |
+| Arch / CachyOS | `sudo pacman -S tailscale && sudo systemctl enable --now tailscaled && sudo tailscale up` |
+| macOS | `brew install --cask tailscale`, or the App Store |
+| Windows | `winget install tailscale.tailscale` |
 
 Same account on both, then start `video-sync-play` again — it will print a
 link that works from anywhere.
@@ -132,12 +166,25 @@ Only if you want to; the release binary needs nothing. Requires Rust 1.75+.
 cargo build --release
 ```
 
-For the dependency-free binary that runs on any Linux:
+For the dependency-free Linux binary that runs on any distribution:
 
 ```bash
 rustup target add x86_64-unknown-linux-musl
 cargo build --release --target x86_64-unknown-linux-musl
 ```
+
+Linux ARM64 cross-builds from an x86 machine with no C toolchain — the
+repository's `.cargo/config.toml` points that target at the linker Rust
+already ships:
+
+```bash
+rustup target add aarch64-unknown-linux-musl
+cargo build --release --target aarch64-unknown-linux-musl
+```
+
+macOS and Windows binaries are built on their own machines by
+`.github/workflows/release.yml`, which also runs the behaviour tests on each
+operating system before publishing.
 
 The web UI is compiled into the binary, so the result is a single file.
 

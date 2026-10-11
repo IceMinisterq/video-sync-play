@@ -8,7 +8,6 @@
 mod protocol;
 mod room;
 
-use std::io::Read;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
@@ -153,15 +152,36 @@ fn banner(port: u16, code: &str, open: bool) {
     if tailscale_ip().is_none() {
         println!("  Not on the same wifi as them? Install Tailscale on both machines");
         println!("  (free, nothing to rent, encrypted) and re-run this:");
-        println!("    Fedora:  sudo dnf install tailscale && sudo systemctl enable --now tailscaled && sudo tailscale up");
-        println!("    Arch:    sudo pacman -S tailscale   && sudo systemctl enable --now tailscaled && sudo tailscale up\n");
+        if cfg!(target_os = "macos") {
+            println!("    brew install --cask tailscale   (or get it from the App Store)\n");
+        } else if cfg!(target_os = "windows") {
+            println!("    winget install tailscale.tailscale\n");
+        } else {
+            println!("    Fedora:  sudo dnf install tailscale && sudo systemctl enable --now tailscaled && sudo tailscale up");
+            println!("    Arch:    sudo pacman -S tailscale   && sudo systemctl enable --now tailscaled && sudo tailscale up\n");
+        }
     }
 }
 
 /// Hand the host's own browser the page, so starting up is one step.
 fn open_browser(port: u16, code: &str) {
     let url = format!("http://localhost:{port}/#{code}");
-    let _ = std::process::Command::new("xdg-open")
+
+    // Every desktop has a "hand this to whatever handles it" command; they
+    // just disagree about its name.
+    let (exe, lead): (&str, &[&str]) = if cfg!(target_os = "macos") {
+        ("open", &[])
+    } else if cfg!(target_os = "windows") {
+        // `start` is a cmd builtin. The empty string is its window-title
+        // argument: without it cmd takes the URL as the title and opens
+        // nothing.
+        ("cmd", &["/C", "start", ""])
+    } else {
+        ("xdg-open", &[])
+    };
+
+    let _ = std::process::Command::new(exe)
+        .args(lead)
         .arg(&url)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -182,34 +202,47 @@ fn lan_ip() -> Option<IpAddr> {
 }
 
 fn tailscale_ip() -> Option<String> {
-    let out = std::process::Command::new("tailscale").args(["ip", "-4"]).output().ok()?;
-    let s = String::from_utf8(out.stdout).ok()?;
-    let first = s.lines().next()?.trim().to_string();
-    if first.is_empty() {
-        None
-    } else {
-        Some(first)
+    // On macOS and Windows the CLI ships inside the app and is often not on
+    // PATH, so try the install locations as well.
+    const CANDIDATES: &[&str] = &[
+        "tailscale",
+        "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+        "/usr/local/bin/tailscale",
+        r"C:\Program Files\Tailscale\tailscale.exe",
+    ];
+
+    for exe in CANDIDATES {
+        let Ok(out) = std::process::Command::new(exe).args(["ip", "-4"]).output() else {
+            continue;
+        };
+        if !out.status.success() {
+            continue;
+        }
+        let Ok(text) = String::from_utf8(out.stdout) else { continue };
+        if let Some(first) = text.lines().next() {
+            let first = first.trim();
+            if !first.is_empty() {
+                return Some(first.to_string());
+            }
+        }
     }
+    None
 }
 
-/// Room code doubles as the shared secret, so take it from the kernel CSPRNG
+/// Room code doubles as the shared secret, so take it from the OS CSPRNG
 /// rather than from the clock. 8 chars of a 32-symbol alphabet = 40 bits.
-fn kernel_random() -> Option<u64> {
-    let mut seed = [0u8; 8];
-    let mut f = std::fs::File::open("/dev/urandom").ok()?;
-    f.read_exact(&mut seed).ok()?;
-    Some(u64::from_le_bytes(seed))
-}
-
 fn gen_code() -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    let mut x = kernel_random().unwrap_or_else(|| {
-        std::time::SystemTime::now()
+    let mut seed = [0u8; 8];
+    let mut x = match getrandom::getrandom(&mut seed) {
+        Ok(()) => u64::from_le_bytes(seed),
+        // No CSPRNG is a bad sign, but a weak code beats refusing to start.
+        Err(_) => std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0x1234_5678)
-            ^ ((std::process::id() as u64) << 32)
-    });
+            ^ ((std::process::id() as u64) << 32),
+    };
     let mut out = String::with_capacity(8);
     for _ in 0..8 {
         // splitmix64, so each output char depends on all the seed bits.
