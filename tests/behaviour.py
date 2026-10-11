@@ -45,6 +45,18 @@ def check(label, got, want):
 def case(n): print(f"\n[{n}]")
 
 
+def settle(peer, count, timeout=10):
+    """Wait until the room holds exactly `count` peers.
+
+    Closes from a previous case are processed asynchronously, and a late
+    leave() legitimately force-pauses everyone still present - so a test that
+    starts resuming before the room has settled races with it.
+    """
+    st = peer.wait_state(lambda s: len(s['peers']) == count, timeout)
+    time.sleep(0.4)
+    return st
+
+
 if not os.path.exists(BINARY):
     sys.exit(f"no binary at {BINARY} - run: cargo build --release")
 
@@ -119,7 +131,7 @@ try:
     # ------------------------------------------------------ 6. watchdog / auth
     case("watchdog: a silent peer gates the room")
     c, d = join("carol"), join("dave")
-    time.sleep(0.3)
+    settle(c, 2)
     c.send({"t": "resume", "position": 0}); d.send({"t": "resume", "position": 0})
     c.wait_state(lambda s: s['playing'], 2)
     check("running", c.last_state()['playing'], True)
@@ -134,7 +146,7 @@ try:
     e, f = join("eve"), join("frank")
     stop2 = threading.Event()
     threading.Thread(target=keepalive, args=([e, f], stop2), daemon=True).start()
-    time.sleep(0.3)
+    settle(e, 2)
     e.send({"t": "seek", "position": 500.0}); time.sleep(0.4)
     check("seek beyond the end is clamped", e.last_state()['position'], 120.0)
     e.send({"t": "seek", "position": 119.0})
@@ -149,8 +161,7 @@ try:
     g = join("gina")
     h = join("hank", file={"name": "other.mkv", "size": 999, "duration": 93.0})
     i = join("ivan")
-    time.sleep(0.5)
-    st = g.last_state()
+    st = settle(g, 3)
     flagged = sorted(p['name'] for p in st['peers'] if p['mismatch'])
     check("odd one out flagged", flagged, ['hank'])
     g.close(); h.close(); i.close()
@@ -163,9 +174,9 @@ try:
     k, m = join("kim"), join("mo")
     stop3 = threading.Event()
     threading.Thread(target=keepalive, args=([k], stop3), daemon=True).start()
-    time.sleep(0.4)
+    settle(k, 2)
     k.send({"t": "resume", "position": 0}); m.send({"t": "resume", "position": 0})
-    k.wait_state(lambda s: s['playing'], 3)
+    k.wait_state(lambda s: s['playing'], 5)
     check("both watching", k.last_state()['playing'], True)
     # mo stops talking without closing the socket; only kim keeps pinging.
     m.abandon()   # stops pinging; the socket stays open, so no FIN arrives
