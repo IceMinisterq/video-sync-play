@@ -43,9 +43,17 @@ jobs:
       # no glibc version to match and nothing to install.
       - run: cargo build --release --target ${{ matrix.target }}
 
+      - name: Unit tests
+        if: matrix.native
+        run: cargo test --release --target ${{ matrix.target }}
+
       - name: Behaviour tests
         if: matrix.native
         run: python3 tests/behaviour.py target/${{ matrix.target }}/release/video-sync-play
+
+      - name: Port mapping against a fake router
+        if: matrix.native
+        run: python3 tests/portmap.py target/${{ matrix.target }}/release/video-sync-play
 
       - name: Confirm no dynamic dependencies
         if: matrix.native
@@ -78,8 +86,14 @@ jobs:
             target/aarch64-apple-darwin/release/video-sync-play
           lipo -info video-sync-play-macos
 
+      - name: Unit tests
+        run: cargo test --release
+
       - name: Behaviour tests
         run: python3 tests/behaviour.py ./video-sync-play-macos
+
+      - name: Port mapping against a fake router
+        run: python3 tests/portmap.py ./video-sync-play-macos
 
       - uses: actions/upload-artifact@v4
         with:
@@ -92,8 +106,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cargo build --release
+      - name: Unit tests
+        run: cargo test --release
       - name: Behaviour tests
         run: python3 tests/behaviour.py target/release/video-sync-play.exe
+      - name: Port mapping against a fake router
+        run: python3 tests/portmap.py target/release/video-sync-play.exe
       - run: copy target\release\video-sync-play.exe video-sync-play-windows.exe
       - uses: actions/upload-artifact@v4
         with:

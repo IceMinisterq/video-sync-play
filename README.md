@@ -82,9 +82,41 @@ is described below.
 
 **Same wifi** — nothing to do. The printed link already works.
 
-**Different places** — install Tailscale on both machines. It puts the two of
-you on a private, encrypted network with nothing in the middle, free, no
-server to rent:
+**Different places** — two options, and the program tells you about both.
+
+### The easy one: `--public`
+
+```bash
+./video-sync-play --public
+```
+
+This asks your router to open the port for you, using UPnP or NAT-PMP, and
+then prints a link that works from anywhere. There is nothing to install and
+nothing to configure on the router — the program speaks those protocols
+itself. The forward is closed again when you press Ctrl-C, and it carries a
+one-hour lease so it expires on its own even if the program is killed.
+
+Be aware of what it does, because it is a real hole while it is open:
+
+- The port is reachable **from the whole internet** for as long as the
+  program runs. The room code keeps people out — it is 12 characters when
+  `--public` is on, and wrong guesses are rate-limited — but the port is
+  visible to anyone scanning.
+- The connection is **plain HTTP**. Someone between you can see what you are
+  watching and read the chat. They cannot join without the code.
+- Many routers have UPnP switched off, so this simply may not work. The
+  program says so and carries on.
+- Behind carrier-grade NAT (common on mobile and some fibre providers) the
+  forward succeeds but is still unreachable. The program detects that and
+  tells you, rather than printing a link that cannot work.
+
+Do not use it on a network you do not control — a hotel, a dorm, an office.
+The "internet" it opens you to there includes everyone else on that network.
+
+### The private one: Tailscale
+
+Encrypted end to end, and nothing is exposed to the internet at all. It needs
+installing on both machines, which is the only reason it is not first.
 
 | | |
 |---|---|
@@ -93,12 +125,11 @@ server to rent:
 | macOS | `brew install --cask tailscale`, or the App Store |
 | Windows | `winget install tailscale.tailscale` |
 
-Same account on both, then start `video-sync-play` again — it will print a
-link that works from anywhere.
+Same account on both, then start `video-sync-play` again — it prints a
+Tailscale link and prefers it over everything else.
 
-You *can* forward a port on your router instead, but that connection is plain
-HTTP: anyone in between can read your chat and see what you are watching.
-Tailscale encrypts it and needs no router changes.
+If you are deciding: use Tailscale for anything you would rather keep
+private, and `--public` when you just want it to work in one command.
 
 ## Controls
 
@@ -120,26 +151,54 @@ this list.
 | `m` | mute |
 | `f`, double-click | fullscreen |
 | `a` | aspect ratio |
-| `v` | subtitles on / off |
+| `v` | next subtitle track |
+| `b` | next audio track |
 
-Play, pause and jumps move the room. Volume, subtitles and aspect ratio are
-yours alone — change them freely.
+Play, pause and jumps move the room. **Volume, subtitles, audio track and
+aspect ratio are yours alone** — you each pick your own, and changing them
+sends nothing to the other person. One of you can watch with French subtitles
+while the other has none.
 
-Drag an `.srt` or `.vtt` file onto the window for subtitles. You each load
-your own.
+### Audio tracks and subtitles
+
+The button to the right of the volume slider opens the track menu.
+
+**Subtitles** — drag a subtitle file onto the window, or load one from the
+menu. `.srt`, `.vtt`, `.ass` and `.ssa` all work; SubRip and SubStation are
+converted to WebVTT for you, styling tags and all. Load as many as you like
+and switch between them with `v` — they stay parsed, so switching is
+instant. Files that are not UTF-8 (a lot of older `.srt`s are Windows-1252)
+are detected and decoded properly rather than coming out full of question
+marks.
+
+**Audio tracks** — the menu lists every track the browser exposes, and `b`
+steps through them. Be warned: *most browsers do not expose them at all*.
+Safari does; Firefox does with `media.track.enabled` turned on in
+`about:config`; Chrome and Chromium do not implement the API, so a file with
+English and French audio will only ever play the first. The menu says which
+case you are in rather than pretending.
+
+If you are stuck on a Chromium browser and need the other language, pick the
+track when converting instead — `-map 0:v -map 0:a:1` selects the second
+audio stream.
 
 ## Options
 
 You should not need any of these.
 
 ```
+--public           ask the router to open the port, so the link works
+                   over the internet without Tailscale
 --port 8787        port to listen on
 --bind 0.0.0.0     interface to bind
 --code WORD        fixed room code instead of a fresh random one
+                   (at least 12 characters when used with --public)
 --no-open          do not open the browser on startup
 ```
 
-`VSP_TRACE=1` logs every room state change to stderr.
+`VSP_TRACE=1` logs every room state change to stderr. `VSP_GATEWAY=<ip>`
+overrides the detected router address, which is occasionally useful on an
+unusual network and is what the port-mapping tests point at a fake router.
 
 ## If the video will not play
 
@@ -193,7 +252,9 @@ the binary themselves, drive it with real WebSocket peers and check the sync
 rules:
 
 ```bash
-python3 tests/behaviour.py target/release/video-sync-play
+cargo test --release                                      # protocol encoding and parsing
+python3 tests/behaviour.py target/release/video-sync-play # sync rules, end to end
+python3 tests/portmap.py  target/release/video-sync-play  # port mapping, against a fake router
 ```
 
 ## How it stays in sync

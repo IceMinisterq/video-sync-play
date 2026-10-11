@@ -63,6 +63,10 @@ class WS:
         try: self.sock.close()
         except Exception: pass
 
+    def abandon(self):
+        """Stop talking without closing: a closed laptop lid, not a quit."""
+        self.alive = False
+
     def ping(self):
         self.send({"t": "ping", "c": 0})
 

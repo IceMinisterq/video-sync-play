@@ -25,6 +25,11 @@ const SEEK_GRACE_MS: f64 = 500.0;
 /// closed laptop lid or a yanked cable does not close the TCP socket for
 /// minutes, and until it does the room would happily play on without them.
 const PEER_TIMEOUT_MS: f64 = 6_000.0;
+/// After this long with no word at all, treat the peer as gone and drop it.
+/// Without this a laptop that is closed mid-film - which never closes its
+/// TCP connection - would hold the room paused forever, and the person still
+/// watching could never start it again.
+const PEER_GONE_MS: f64 = 45_000.0;
 /// How far a pausing peer's reported position may differ from the room's own
 /// estimate before we distrust it and freeze at the room's position instead.
 const PAUSE_TRUST_S: f64 = 2.0;
@@ -201,6 +206,30 @@ impl Room {
         let mut st = self.state.lock().unwrap();
         let now = now_ms();
         let mut changed = false;
+
+        // Long gone: forget them entirely, exactly as if the socket had
+        // closed, so whoever is left can carry on watching.
+        let gone: Vec<u64> = st
+            .peers
+            .iter()
+            .filter(|(_, p)| now - p.last_seen > PEER_GONE_MS)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &gone {
+            st.peers.remove(id);
+            changed = true;
+        }
+        if !gone.is_empty() && st.playing {
+            st.position = st.pos_at(now);
+            st.anchor = now;
+            st.playing = false;
+        }
+        if !gone.is_empty() {
+            for p in st.peers.values_mut() {
+                p.paused = true;
+            }
+        }
+
         for p in st.peers.values_mut() {
             let silent = now - p.last_seen > PEER_TIMEOUT_MS;
             if silent != p.silent {

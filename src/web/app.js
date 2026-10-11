@@ -30,7 +30,8 @@ const el = {
   bar: $('#bar'), progress: $('#progress'), buffered: $('#buffered'),
   knob: $('#knob'), scrub: $('#scrub'),
   mute: $('#mute'), volume: $('#volume'), full: $('#full'),
-  subs: $('#subs'), subfile: $('#subfile'),
+  subfile: $('#subfile'), tracksBtn: $('#tracks-btn'), tracksMenu: $('#tracks-menu'),
+  audioList: $('#audio-list'), subList: $('#sub-list'), subLoad: $('#sub-load'),
   linkState: $('#link-state'), linkText: $('#link-text'), drift: $('#drift'),
   peers: $('#peers'), warn: $('#warn'), log: $('#log'),
   chatForm: $('#chat-form'), chatInput: $('#chat-input'), swap: $('#swap'),
@@ -420,6 +421,8 @@ function loadFile(f) {
 
   myFile = f;
   if (objectUrl) URL.revokeObjectURL(objectUrl);
+  // Subtitles belong to the film that was playing, not the next one.
+  clearSubs();
   objectUrl = URL.createObjectURL(f);
 
   el.setupStatus.textContent = 'loading…';
@@ -445,31 +448,255 @@ function loadFile(f) {
 // -------------------------------------------------------------- subtitles
 
 function srtToVtt(text) {
-  return 'WEBVTT\n\n' + text
-    .replace(/\r/g, '')
-    .replace(/^\s*\d+\s*$/gm, '')
-    .replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2')
-    .trim() + '\n';
+  const lines = text.replace(/\r/g, '').split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    // Drop an SRT cue number only when the next line is actually a timing
+    // line. Blindly deleting every digit-only line also deletes subtitles
+    // whose whole text is a number - a year, a count, a countdown.
+    if (/^\s*\d+\s*$/.test(lines[i]) && /-->/.test(lines[i + 1] || '')) continue;
+    out.push(lines[i].replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2'));
+  }
+  return 'WEBVTT\n\n' + out.join('\n').trim() + '\n';
 }
 
+/** Advanced SubStation: take the dialogue, leave the styling. */
+function assToVtt(text) {
+  const cues = [];
+  let fields = null;
+  for (const line of text.replace(/\r/g, '').split('\n')) {
+    if (/^Format:/i.test(line) && /Start/i.test(line)) {
+      fields = line.slice(line.indexOf(':') + 1).split(',').map((f) => f.trim().toLowerCase());
+      continue;
+    }
+    if (!/^Dialogue:/i.test(line) || !fields) continue;
+
+    // Only the last field (Text) may itself contain commas.
+    const rest = line.slice(line.indexOf(':') + 1);
+    const parts = rest.split(',');
+    const head = parts.slice(0, fields.length - 1).map((p) => p.trim());
+    const body = parts.slice(fields.length - 1).join(',');
+
+    const at = (name) => {
+      const i = fields.indexOf(name);
+      return i === -1 ? null : head[i];
+    };
+    const start = assTime(at('start'));
+    const end = assTime(at('end'));
+    if (!start || !end) continue;
+
+    const txt = body
+      .replace(/\{[^}]*\}/g, '')     // {\pos(..)} and friends
+      .replace(/\\[Nn]/g, '\n')      // hard line breaks
+      .replace(/\\h/g, ' ')
+      .trim();
+    if (txt) cues.push(`${start} --> ${end}\n${txt}`);
+  }
+  return 'WEBVTT\n\n' + cues.join('\n\n') + '\n';
+}
+
+/** ASS writes 0:00:01.23; WebVTT wants 00:00:01.230. */
+function assTime(t) {
+  const m = /^(\d+):(\d{2}):(\d{2})[.,](\d{1,3})$/.exec((t || '').trim());
+  if (!m) return null;
+  return `${String(m[1]).padStart(2, '0')}:${m[2]}:${m[3]}.${m[4].padEnd(3, '0')}`;
+}
+
+/** Decode subtitle bytes, falling back when the file is not UTF-8.
+ *
+ * A large share of subtitle files in circulation are Windows-1252 rather
+ * than UTF-8, and decoding those as UTF-8 turns every accent into a
+ * replacement character. */
+function decodeSubs(buffer) {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+  } catch (_) {
+    return new TextDecoder('windows-1252').decode(buffer);
+  }
+}
+
+/** Add a subtitle file as another selectable track, keeping any already loaded. */
 function loadSubs(f) {
   if (!f) return;
   const reader = new FileReader();
   reader.onload = () => {
-    const raw = String(reader.result);
-    const vtt = /\.vtt$/i.test(f.name) ? raw : srtToVtt(raw);
+    const raw = decodeSubs(reader.result);
+    const vtt = /\.vtt$/i.test(f.name) ? raw
+      : /\.(ass|ssa)$/i.test(f.name) ? assToVtt(raw)
+      : srtToVtt(raw);
+
+    // A file we could not make sense of yields a track with no cues, which
+    // would sit silently in the menu looking like it works.
+    if (!vtt.includes('-->')) {
+      note(`${f.name}: no subtitles found in that file`, 'sys');
+      osd('could not read those subtitles');
+      return;
+    }
+
     const url = URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' }));
-    for (const t of [...el.video.querySelectorAll('track')]) t.remove();
+    subUrls.push(url);
+
     const track = document.createElement('track');
     track.kind = 'subtitles';
-    track.label = f.name;
+    // Strip the extension: the bare name reads better in the menu.
+    track.label = f.name.replace(/\.[^.]+$/, '');
     track.src = url;
-    track.default = true;
     el.video.appendChild(track);
-    track.addEventListener('load', () => { el.video.textTracks[0].mode = 'showing'; });
+
+    // A track added from script starts 'disabled', and a disabled track never
+    // fetches its cues - so waiting for its load event would wait forever.
+    // Give it a mode straight away: show the first one loaded, and keep the
+    // rest parsed but hidden so switching between them is instant.
+    const tt = track.track;
+    if (tt) tt.mode = currentSubs() === -1 ? 'showing' : 'hidden';
+
+    track.addEventListener('load', renderTracks);
     note(`subtitles: ${f.name}`, 'sys');
+    renderTracks();
   };
-  reader.readAsText(f);
+  reader.readAsArrayBuffer(f);
+}
+
+/** Blob URLs for the loaded subtitles, so a file swap can release them. */
+let subUrls = [];
+
+function clearSubs() {
+  for (const t of [...el.video.querySelectorAll('track')]) t.remove();
+  for (const u of subUrls) URL.revokeObjectURL(u);
+  subUrls = [];
+}
+
+/** Subtitle tracks worth offering: captions and subtitles, not metadata. */
+function subTracks() {
+  const out = [];
+  const list = el.video.textTracks;
+  for (let i = 0; i < list.length; i++) {
+    if (list[i].kind === 'subtitles' || list[i].kind === 'captions') out.push(i);
+  }
+  return out;
+}
+
+/** -1 turns subtitles off; otherwise index into video.textTracks. */
+function showSubs(index) {
+  const list = el.video.textTracks;
+  for (let i = 0; i < list.length; i++) {
+    if (list[i].kind === 'subtitles' || list[i].kind === 'captions') {
+      // 'hidden' rather than 'disabled' for the others: the cues stay parsed,
+      // so switching back is instant instead of re-fetching.
+      list[i].mode = i === index ? 'showing' : 'hidden';
+    }
+  }
+  renderTracks();
+}
+
+function currentSubs() {
+  const list = el.video.textTracks;
+  for (let i = 0; i < list.length; i++) if (list[i].mode === 'showing') return i;
+  return -1;
+}
+
+/** VLC's `v`: step through off -> each track -> off. */
+function cycleSubs() {
+  const available = subTracks();
+  if (!available.length) {
+    osd('no subtitles - load a file from the tracks menu');
+    return;
+  }
+  const at = available.indexOf(currentSubs());
+  const next = at + 1 >= available.length ? -1 : available[at + 1];
+  showSubs(next);
+  osd(next === -1 ? 'subtitles off'
+    : `subtitles: ${el.video.textTracks[next].label || 'track ' + (next + 1)}`);
+}
+
+/* Audio track switching depends on the browser exposing AudioTrackList.
+ * Safari does; Chrome does not implement it at all, and Firefox keeps it
+ * behind media.track.enabled. Where it is missing there is no way to reach
+ * the other tracks from a web page, so the menu says so rather than
+ * pretending. */
+/** Whether this browser implements AudioTrackList at all. */
+function audioSupported() {
+  return !!el.video.audioTracks;
+}
+
+function audioTracks() {
+  const list = el.video.audioTracks;
+  return list && list.length ? list : null;
+}
+
+function selectAudio(index) {
+  const list = audioTracks();
+  if (!list) return;
+  for (let i = 0; i < list.length; i++) list[i].enabled = i === index;
+  renderTracks();
+}
+
+function currentAudio() {
+  const list = audioTracks();
+  if (!list) return -1;
+  for (let i = 0; i < list.length; i++) if (list[i].enabled) return i;
+  return -1;
+}
+
+/** VLC's `b`. */
+function cycleAudio() {
+  const list = audioTracks();
+  if (!audioSupported()) { osd('this browser cannot switch audio tracks'); return; }
+  if (!list) { osd('this file has no audio track'); return; }
+  if (list.length < 2) { osd('only one audio track'); return; }
+  const next = (currentAudio() + 1) % list.length;
+  selectAudio(next);
+  osd(`audio: ${trackName(list[next], next)}`);
+}
+
+function trackName(t, i) {
+  return t.label || t.language || `track ${i + 1}`;
+}
+
+/** Rebuild both lists from whatever the media element currently exposes. */
+function renderTracks() {
+  const row = (label, checked, onPick) => {
+    const li = document.createElement('li');
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = label;
+    b.setAttribute('aria-checked', checked ? 'true' : 'false');
+    b.addEventListener('click', onPick);
+    li.appendChild(b);
+    return li;
+  };
+
+  el.audioList.textContent = '';
+  const audio = audioTracks();
+  if (!audio) {
+    const p = document.createElement('p');
+    p.className = 'menu-empty';
+    p.textContent = !audioSupported()
+      ? 'This browser cannot list audio tracks. Safari can; in Firefox enable media.track.enabled.'
+      : 'No audio track in this file.';
+    el.audioList.appendChild(p);
+  } else {
+    for (let i = 0; i < audio.length; i++) {
+      const idx = i;
+      el.audioList.appendChild(
+        row(trackName(audio[i], i), currentAudio() === i, () => selectAudio(idx)));
+    }
+  }
+
+  el.subList.textContent = '';
+  el.subList.appendChild(row('Off', currentSubs() === -1, () => showSubs(-1)));
+  for (const i of subTracks()) {
+    const idx = i;
+    el.subList.appendChild(
+      row(el.video.textTracks[i].label || `Track ${i + 1}`,
+          currentSubs() === i, () => showSubs(idx)));
+  }
+}
+
+function toggleTracksMenu(force) {
+  const show = force === undefined ? el.tracksMenu.classList.contains('hidden') : force;
+  if (show) renderTracks();
+  el.tracksMenu.classList.toggle('hidden', !show);
 }
 
 // ---------------------------------------------------------------- seek bar
@@ -559,14 +786,6 @@ function cycleAspect() {
   osd('aspect: ' + FITS[fitIndex]);
 }
 
-function toggleSubs() {
-  const tracks = el.video.textTracks;
-  if (!tracks.length) { osd('no subtitles loaded'); return; }
-  const on = tracks[0].mode === 'showing';
-  tracks[0].mode = on ? 'hidden' : 'showing';
-  osd(on ? 'subtitles off' : 'subtitles on');
-}
-
 function toggleHelp(force) {
   const show = force === undefined ? el.help.classList.contains('hidden') : force;
   el.help.classList.toggle('hidden', !show);
@@ -594,7 +813,7 @@ document.addEventListener('drop', (ev) => {
   ev.preventDefault();
   const f = ev.dataTransfer.files[0];
   if (!f) return;
-  if (/\.(srt|vtt)$/i.test(f.name)) loadSubs(f);
+  if (/\.(srt|vtt|ass|ssa)$/i.test(f.name)) loadSubs(f);
   else loadFile(f);
 });
 
@@ -607,6 +826,11 @@ el.name.addEventListener('change', () => {
 
 el.play.addEventListener('click', toggle);
 el.stage.addEventListener('click', (ev) => {
+  // A click with the track menu open means "put that away", not "pause".
+  if (!el.tracksMenu.classList.contains('hidden')) {
+    toggleTracksMenu(false);
+    return;
+  }
   if (ev.target === el.video || ev.target === el.gate || ev.target.closest('.gate-card')) {
     if (needsGesture) { needsGesture = false; wantPlay(); }
     else toggle();
@@ -627,8 +851,25 @@ el.full.addEventListener('click', () => {
   else el.stage.requestFullscreen().catch(() => {});
 });
 
-el.subs.addEventListener('click', () => el.subfile.click());
-el.subfile.addEventListener('change', () => loadSubs(el.subfile.files[0]));
+el.tracksBtn.addEventListener('click', (ev) => { ev.stopPropagation(); toggleTracksMenu(); });
+el.tracksMenu.addEventListener('click', (ev) => ev.stopPropagation());
+el.subLoad.addEventListener('click', () => el.subfile.click());
+el.subfile.addEventListener('change', () => {
+  for (const f of el.subfile.files) loadSubs(f);
+  el.subfile.value = '';
+});
+document.addEventListener('click', (ev) => {
+  if (!el.tracksMenu.contains(ev.target) && ev.target !== el.subfile) toggleTracksMenu(false);
+});
+
+/* Tracks can appear after metadata loads, and in-band tracks later still,
+ * so keep the menu honest. Each event is bound on the object that actually
+ * emits it. */
+el.video.addEventListener('loadedmetadata', renderTracks);
+for (const list of [el.video.textTracks, el.video.audioTracks]) {
+  if (!list || !list.addEventListener) continue;
+  for (const ev of ['addtrack', 'removetrack', 'change']) list.addEventListener(ev, renderTracks);
+}
 
 el.swap.addEventListener('click', () => {
   wantPause();
@@ -658,6 +899,9 @@ function jumpSize(ev) {
 
 document.addEventListener('keydown', (ev) => {
   if (ev.target.tagName === 'INPUT' || ev.metaKey) return;
+  // Space and Enter belong to whatever control has focus - a track in the
+  // menu, say - rather than to the room.
+  if ((ev.key === ' ' || ev.key === 'Enter') && ev.target.closest('button')) return;
 
   // Arrows carry the modifiers; everything else must be unmodified so we do
   // not swallow Ctrl+R, Ctrl+T and friends.
@@ -681,9 +925,10 @@ document.addEventListener('keydown', (ev) => {
     case 'f': el.full.click(); break;
     case 'm': el.mute.click(); break;
     case 'a': cycleAspect(); break;
-    case 'v': toggleSubs(); break;
+    case 'v': cycleSubs(); break;
+    case 'b': cycleAudio(); break;
     case '?': toggleHelp(); break;
-    case 'Escape': toggleHelp(false); break;
+    case 'Escape': toggleHelp(false); toggleTracksMenu(false); break;
     default: return;
   }
   ev.preventDefault();

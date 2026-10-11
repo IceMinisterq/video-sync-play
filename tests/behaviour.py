@@ -155,14 +155,62 @@ try:
     check("odd one out flagged", flagged, ['hank'])
     g.close(); h.close(); i.close()
 
+    case("abandoned peer: a laptop that closes mid-film must not strand the other")
+    # A connection that dies without a FIN - a closed lid, a yanked cable -
+    # gates the room, and nothing would ever clear it. After a grace period
+    # the peer is dropped so the person still watching can carry on.
+    # This waits out the real timeout, so it is the slowest case here.
+    k, m = join("kim"), join("mo")
+    stop3 = threading.Event()
+    threading.Thread(target=keepalive, args=([k], stop3), daemon=True).start()
+    time.sleep(0.4)
+    k.send({"t": "resume", "position": 0}); m.send({"t": "resume", "position": 0})
+    k.wait_state(lambda s: s['playing'], 3)
+    check("both watching", k.last_state()['playing'], True)
+    # mo stops talking without closing the socket; only kim keeps pinging.
+    m.abandon()   # stops pinging; the socket stays open, so no FIN arrives
+    k.wait_state(lambda s: not s['playing'], 12)
+    check("room holds for the peer that went quiet", k.last_state()['playing'], False)
+    gone = k.wait_state(lambda s: len(s['peers']) == 1, 70)
+    check("the dead peer is eventually dropped", [p['name'] for p in gone['peers']], ['kim'])
+    k.send({"t": "resume", "position": gone['position']})
+    back = k.wait_state(lambda s: s['playing'], 5)
+    check("the one still watching can carry on", back['playing'], True)
+    stop3.set(); k.close()
+
     case("auth: the room code is required")
     bad = WS(port=PORT)
     bad.send({"t": "hello", "code": "WRONGCDE", "name": "mallory", "file": FILE})
-    time.sleep(0.5)
+    # The server deliberately waits a second before refusing, to take the
+    # speed out of guessing, so give it longer than that.
+    t0 = time.time()
+    while time.time() - t0 < 4 and not any(m.get('t') == 'error' for m in bad.inbox):
+        time.sleep(0.1)
     errs = [m for m in bad.inbox if m.get('t') == 'error']
     check("rejected with an error", bool(errs), True)
+    check("refusal is not instant, so guessing is slow", time.time() - t0 > 0.9, True)
     check("no room state leaked", bad.last_state(), None)
     bad.close()
+
+    case("auth: repeated wrong codes get throttled")
+    # The per-source limit is 5 failures a minute, then a ban. Burn through it
+    # and confirm later attempts are dropped without even an error reply,
+    # which is what denies a guesser both speed and feedback.
+    refused_silently = 0
+    for i in range(9):
+        w = WS(port=PORT)
+        w.send({"t": "hello", "code": f"NOPENOPE{i:02d}", "name": "m", "file": FILE})
+        time.sleep(1.3)
+        if not any(m.get('t') == 'error' for m in w.inbox):
+            refused_silently += 1
+        w.close()
+    check("a sustained guesser stops getting answers", refused_silently > 0, True)
+
+    case("auth: the right code still works after all that")
+    good = join("legit")
+    time.sleep(0.5)
+    check("an honest peer is unaffected", good.last_state() is not None, True)
+    good.close()
 
 finally:
     server.terminate()
