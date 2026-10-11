@@ -12,6 +12,8 @@ Needs nothing installed - stdlib only.
 """
 import http.server, os, re, signal, socket, subprocess, sys, threading, time
 
+WINDOWS = sys.platform == "win32"
+
 BINARY = sys.argv[1] if len(sys.argv) > 1 else "target/release/video-sync-play"
 HTTP_PORT, APP_PORT = 8977, 8978
 EXTERNAL_IP, EXTERNAL_PORT = "203.0.113.7", 8978
@@ -126,9 +128,12 @@ threading.Thread(target=httpd.serve_forever, daemon=True).start()
 time.sleep(0.4)
 
 env = dict(os.environ, VSP_GATEWAY="127.0.0.1")
+# Windows cannot deliver SIGINT to a child. A child in its own process group
+# can be sent CTRL_BREAK_EVENT instead, which the program treats the same way.
 proc = subprocess.Popen(
     [BINARY, "--public", "--port", str(APP_PORT), "--no-open", "--code", "PORTMAPTEST1"],
-    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True)
+    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True,
+    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if WINDOWS else 0)
 
 out_lines = []
 def drain():
@@ -177,7 +182,7 @@ else:
     fails.append("no AddPortMapping")
 
 print("\n[cleanup on Ctrl-C]")
-proc.send_signal(signal.SIGINT)
+proc.send_signal(signal.CTRL_BREAK_EVENT if WINDOWS else signal.SIGINT)
 try:
     proc.wait(timeout=10)
 except subprocess.TimeoutExpired:

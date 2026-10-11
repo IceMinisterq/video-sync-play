@@ -187,6 +187,49 @@ fn parse_args() -> Args {
     a
 }
 
+/// Wait for any of the ways this program is asked to stop.
+///
+/// Worth covering all of them: each one needs to reach the code that hands
+/// the router's port back, and a forward left behind is a hole the user did
+/// not agree to keep.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut term = match signal(SignalKind::terminate()) {
+            Ok(s) => s,
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            // `kill`, systemd, a logout.
+            _ = term.recv() => {}
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        use tokio::signal::windows;
+        let (mut brk, mut close) = match (windows::ctrl_break(), windows::ctrl_close()) {
+            (Ok(b), Ok(c)) => (b, c),
+            _ => {
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = brk.recv() => {}
+            // Closing the console window gives us only a few seconds, which
+            // is why the release path is kept short.
+            _ = close.recv() => {}
+        }
+    }
+}
+
 fn die(msg: &str) -> ! {
     eprintln!("video-sync-play: {msg}");
     std::process::exit(2);
@@ -285,7 +328,7 @@ async fn main() {
         router.into_make_service_with_connect_info::<SocketAddr>(),
     )
         .with_graceful_shutdown(async move {
-            let _ = tokio::signal::ctrl_c().await;
+            shutdown_signal().await;
             // Give the port back. A forward left behind on someone's router
             // is a hole they did not agree to keep. Blocking briefly here is
             // fine: we are on our way out.
