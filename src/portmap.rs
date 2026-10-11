@@ -62,6 +62,15 @@ pub enum Method {
 }
 
 impl Mapping {
+    /// The address on this machine that the router forwards to.
+    pub fn internal_ip(&self) -> Option<Ipv4Addr> {
+        match &self.how {
+            Method::Upnp { internal_ip, .. } => Some(*internal_ip),
+            Method::Pcp { client, .. } => Some(*client),
+            Method::NatPmp { gateway } => local_addr_toward(*gateway),
+        }
+    }
+
     pub fn protocol(&self) -> &'static str {
         match self.how {
             Method::Upnp { .. } => "UPnP",
@@ -894,6 +903,24 @@ fn double_nat(ip: Ipv4Addr) -> String {
     )
 }
 
+/// Would a reply to someone on the internet leave by a different route than
+/// the one the router forwards to?
+///
+/// This is what a full-tunnel VPN does: the forwarded connection arrives on
+/// the ethernet card, but the answer is routed into the tunnel and leaves
+/// with the wrong source address, so the far end discards it. The mapping
+/// succeeds and the link still cannot work, which is worth saying out loud.
+///
+/// Pure so it can be tested; the caller supplies the route lookup.
+pub fn misrouted(internal: Ipv4Addr, towards_internet: Option<Ipv4Addr>) -> bool {
+    matches!(towards_internet, Some(out) if out != internal)
+}
+
+/// Which of our addresses the kernel would answer an internet client from.
+pub fn internet_facing_addr() -> Option<Ipv4Addr> {
+    local_addr_toward(Ipv4Addr::new(8, 8, 8, 8))
+}
+
 pub fn is_private(ip: Ipv4Addr) -> bool {
     ip.is_private() || ip.is_link_local() || ip.is_loopback()
 }
@@ -1134,6 +1161,19 @@ mod tests {
 
         r[3] = 2; // NOT_AUTHORIZED
         assert_eq!(parse_pcp(&r), None);
+    }
+
+    #[test]
+    fn a_full_tunnel_vpn_is_recognised_as_breaking_inbound() {
+        let lan = Ipv4Addr::new(192, 168, 1, 70);
+        let vpn = Ipv4Addr::new(10, 162, 21, 174);
+        // Router forwards to the LAN card, but replies would leave via the
+        // tunnel: the far end never sees a usable answer.
+        assert!(misrouted(lan, Some(vpn)));
+        // No VPN: the same interface both ways, so the forward works.
+        assert!(!misrouted(lan, Some(lan)));
+        // Could not tell: say nothing rather than crying wolf.
+        assert!(!misrouted(lan, None));
     }
 
     #[test]

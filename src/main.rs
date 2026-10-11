@@ -352,8 +352,19 @@ fn banner(port: u16, code: &str, open: bool, mapping: Option<&Mapping>) {
     // further.
     let tail = format!("/#{code}");
     let ts = tailscale_ip();
+    // A full-tunnel VPN silently breaks a port forward: the connection comes
+    // in on the ethernet card and the reply goes out the tunnel.
+    let blocked_by_vpn = mapping
+        .and_then(|m| m.internal_ip())
+        .map(|ip| portmap::misrouted(ip, portmap::internet_facing_addr()))
+        .unwrap_or(false);
+
     let (share, how) = match (&ts, mapping, lan_ip()) {
         (Some(ts), _, _) => (format!("http://{ts}:{port}{tail}"), "works from anywhere, encrypted"),
+        (None, Some(m), _) if blocked_by_vpn => (
+            format!("http://{}{tail}", m.external),
+            "your VPN stops this working - see below",
+        ),
         (None, Some(m), _) => (
             format!("http://{}{tail}", m.external),
             "works from anywhere - but not encrypted, see below",
@@ -370,6 +381,15 @@ fn banner(port: u16, code: &str, open: bool, mapping: Option<&Mapping>) {
     println!("  Anyone without that link is refused.\n");
 
     if let Some(m) = mapping {
+        if blocked_by_vpn {
+            println!("  Careful: your router is forwarding the port, but a VPN is carrying all");
+            println!("  of this machine's outgoing traffic. An incoming connection arrives on");
+            println!("  your network card and the reply leaves down the VPN tunnel, so the");
+            println!("  other person's browser never gets an answer and the link above will");
+            println!("  just hang.\n");
+            println!("  Either disconnect the VPN while you watch, or use Tailscale instead,");
+            println!("  which is built for exactly this and is encrypted too.\n");
+        }
         println!("  Your router is now forwarding port {} to this machine, via {}.",
                  m.external.port(), m.protocol());
         if m.lease == 0 {
