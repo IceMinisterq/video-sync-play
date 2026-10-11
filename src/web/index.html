@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>video sync play</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- Setup: name + file. Replaced by the player once a file is loaded. -->
+<section id="setup" class="setup">
+  <h1>video sync play</h1>
+  <p class="lede">Both of you pick your own copy of the video. Nothing uploads &mdash; only play, pause and seek cross the wire.</p>
+
+  <label class="field">
+    <span>Your name</span>
+    <input id="name" type="text" placeholder="ket" maxlength="24" autocomplete="off">
+  </label>
+
+  <div id="drop" class="drop">
+    <input id="file" type="file" accept="video/*,.mp4,.mkv,.webm,.m4v,.mov" hidden>
+    <div class="drop-inner">
+      <strong>Drop the video here</strong>
+      <span>or <button type="button" id="browse" class="link">browse&hellip;</button></span>
+      <small id="lastfile"></small>
+    </div>
+  </div>
+
+  <p id="setup-status" class="status"></p>
+</section>
+
+<!-- Player -->
+<main id="player" class="player hidden">
+  <div id="stage" class="stage">
+    <video id="video" playsinline></video>
+
+    <!-- Shown while the room is gated on somebody. -->
+    <div id="gate" class="gate hidden">
+      <div class="gate-card">
+        <div class="spinner" aria-hidden="true"></div>
+        <p id="gate-text">waiting&hellip;</p>
+      </div>
+    </div>
+
+    <!-- Countdown on the shared un-pause instant. -->
+    <div id="countdown" class="countdown hidden"></div>
+
+    <!-- VLC-style transient readout for volume, jumps, aspect. -->
+    <div id="osd" class="osd"></div>
+
+    <div id="help" class="help hidden">
+      <h2>shortcuts</h2>
+      <dl>
+        <dt>space / k</dt><dd>play &middot; pause (for everyone)</dd>
+        <dt>&larr; &rarr;</dt><dd>jump 5s</dd>
+        <dt>shift + &larr; &rarr;</dt><dd>jump 3s</dd>
+        <dt>alt + &larr; &rarr;</dt><dd>jump 10s</dd>
+        <dt>ctrl + &larr; &rarr;</dt><dd>jump 1 min</dd>
+        <dt>ctrl + alt + &larr; &rarr;</dt><dd>jump 5 min</dd>
+        <dt>j / l</dt><dd>jump 10s</dd>
+        <dt>e</dt><dd>step one frame</dd>
+        <dt>&uarr; &darr; / wheel</dt><dd>volume</dd>
+        <dt>shift + wheel</dt><dd>jump</dd>
+        <dt>m</dt><dd>mute</dd>
+        <dt>f / double-click</dt><dd>fullscreen</dd>
+        <dt>a</dt><dd>aspect ratio</dd>
+        <dt>v</dt><dd>subtitles on / off</dd>
+        <dt>?</dt><dd>this list</dd>
+      </dl>
+      <p>Jumps and play/pause move the whole room. Volume, subtitles and
+         aspect are yours alone.</p>
+    </div>
+
+    <div class="controls">
+      <button id="play" class="icon" title="Play / pause (space)" aria-label="Play or pause">
+        <svg viewBox="0 0 24 24" id="play-icon"><path d="M8 5v14l11-7z"/></svg>
+      </button>
+
+      <span id="time" class="time">0:00</span>
+
+      <div id="bar" class="bar" role="slider" aria-label="Seek" tabindex="0">
+        <div id="buffered" class="bar-buffered"></div>
+        <div id="progress" class="bar-progress"></div>
+        <div id="knob" class="bar-knob"></div>
+        <div id="scrub" class="bar-scrub hidden"></div>
+      </div>
+
+      <span id="duration" class="time">0:00</span>
+
+      <button id="mute" class="icon" title="Mute (m)" aria-label="Mute">
+        <svg viewBox="0 0 24 24"><path d="M3 10v4h4l5 4V6L7 10H3zm13.5 2a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z"/></svg>
+      </button>
+      <input id="volume" class="volume" type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume">
+
+      <button id="subs" class="icon" title="Load subtitles (.srt / .vtt)" aria-label="Subtitles">
+        <svg viewBox="0 0 24 24"><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm2 9h6v2H6v-2zm8 0h4v2h-4v-2z"/></svg>
+      </button>
+      <input id="subfile" type="file" accept=".srt,.vtt" hidden>
+
+      <button id="full" class="icon" title="Fullscreen (f)" aria-label="Fullscreen">
+        <svg viewBox="0 0 24 24"><path d="M4 9V4h5v2H6v3H4zm11-5h5v5h-2V6h-3V4zM4 15h2v3h3v2H4v-5zm14 0h2v5h-5v-2h3v-3z"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <aside class="side">
+    <header class="side-head">
+      <span id="link-state" class="dot" title="connection"></span>
+      <span id="link-text">connecting&hellip;</span>
+      <span id="drift" class="drift" title="how far your playhead is from the room"></span>
+    </header>
+
+    <ul id="peers" class="peers"></ul>
+
+    <div id="warn" class="warn hidden"></div>
+
+    <div class="chat">
+      <ul id="log" class="log"></ul>
+      <form id="chat-form" autocomplete="off">
+        <input id="chat-input" type="text" placeholder="say something&hellip;" maxlength="500">
+      </form>
+    </div>
+
+    <footer class="side-foot">
+      <button type="button" id="swap" class="link">swap file</button>
+      <button type="button" id="helpbtn" class="link">shortcuts (?)</button>
+    </footer>
+  </aside>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

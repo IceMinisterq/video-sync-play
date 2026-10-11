@@ -1,0 +1,16 @@
+[package]
+name = "video-sync-play"
+version = "0.1.0"
+edition = "2021"
+description = "Watch a local video file in sync with a friend. One binary, no server, no account."
+
+[dependencies]
+axum = { version = "0.7", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures-util = "0.3"
+
+[profile.release]
+opt-level = 2
+strip = true
