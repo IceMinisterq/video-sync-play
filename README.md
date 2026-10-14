@@ -273,3 +273,7 @@ A peer that is buffering says so, and the room waits. A peer that disconnects
 stops the room — on a flaky link a reconnect can take tens of seconds, and
 drifting that far apart is the one thing this exists to prevent. Playback
 resumes when you both ask for it.
+
+## Licence
+
+MIT — do what you like with it. See [LICENSE](LICENSE).
